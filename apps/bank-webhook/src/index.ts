@@ -1,46 +1,75 @@
-import express from "express"
+import express from "express";
 import db from "@repo/db/client";
-
 const app = express();
 
-app.post("/hdfcWebhook", async (req,res) => {
+app.use(express.json())
+
+app.post("/hdfcWebhook", async (req, res) => {
     //TODO: Add zod validation here?
-    const paymentInformation = {
+    //TODO: HDFC bank should ideally send us a secret so we know this is sent by them
+    const paymentInformation: {
+        token: string;
+        userId: string;
+        amount: string;
+    } = {
         token: req.body.token,
         userId: req.body.user_identifier,
         amount: req.body.amount
     };
-    
-    try{
-        await db.balance.update({
-            where:{
-                userId: paymentInformation.userId,
-            },
-            data:{
-                amount:{
-                    increment: paymentInformation.amount
+   
+    try {
+        const transaction = await db.onRampTransaction.findUnique({
+            where: {
+                token: paymentInformation.token
+            }
+        });
+        
+        if (!transaction) {
+            return res.status(404).json({
+                message: "Transaction not found"
+            });
+        }
+        
+        if (transaction.status !== "Processing") {
+            return res.status(400).json({
+                message: "Transaction already processed"
+            });
+        }
+        
+        await db.$transaction([
+            db.balance.updateMany({
+                where: {
+                    userId: Number(paymentInformation.userId)
+                },
+                data: {
+                    amount:{
+                        increment: Number(paymentInformation.amount)
+                    }
                 }
-            }
+            }),
+            db.onRampTransaction.updateMany({
+                where: {
+                    token: paymentInformation.token
+                }, 
+                data: {
+                    status: "Success",
+                }
+            })
+        ]);
+        
+
+        res.json({
+            message: "Captured "
         })
-    
-        await db.onRampTransaction.update({
-            where:{
-                token: paymentInformation.userId
-            },
-            data:{
-                status: "Success"
-            }
-        })
-    
-        res.status(200).json({
-            message:"captured"
-        })
-    }
-    catch(e){
+        
+       
+    } catch(e) {
+        console.error(e);
         res.status(411).json({
             message: "Error while processing webhook"
         })
     }
-    
-    // Update balance in db, add txn
+
 })
+
+app.listen(3003);
